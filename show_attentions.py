@@ -82,11 +82,7 @@ def show_attention_to_image(attentions, caption, image, tokens):
     max_val = attentions.max()
     attentions = attentions / max_val
     caption = caption + " · max: {:.2f}".format(max_val)
-    st.image(
-        attentions,
-        caption=caption,
-        width="stretch"
-    )
+    st.image(attentions, caption=caption, width="stretch")
 
 
 def show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens=False):
@@ -174,13 +170,21 @@ def main():
         query_idx = st.selectbox(
             "Query token",
             tokens_non_image_idxs,
-            format_func=lambda i: repr(tokens[i]),
+            format_func=lambda i: repr(tokens[i]) + " ({})".format(i),
             index=len(tokens_non_image_idxs) - 1,
         )
 
         attentions = results["attention-rollout"][()]
         attentions = attentions[query_idx]
         show_attention_to_image(attentions, "Attention to image patches", image, tokens)
+
+        to_drop_start_tokens_0 = st.checkbox(
+            "Ignore tokens before the prompt (attention to non-image tokens)",
+            value=False,
+        )
+
+        if to_drop_start_tokens_0:
+            tokens_non_image_idxs = tokens_non_image_idxs[5:]
 
         tokens_non_image_idxs = tokens_non_image_idxs
         attentions_other = attentions[tokens_non_image_idxs]
@@ -200,7 +204,7 @@ def main():
 
     st.markdown("### Attention of last token to image patches")
     cols1, cols2 = st.columns(2)
-    with cols1: 
+    with cols1:
         col0, col1, col2 = st.columns(3)
         layers_start = col0.number_input(
             "First layer",
@@ -259,7 +263,9 @@ def main():
         for col, layer_idx in zip(cols, layer_idxs):
             with col:
                 caption = "L: {} · H: {}".format(layer_idx, head_idx)
-                show_attention_to_image(attentions[layer_idx, head_idx], caption, image, tokens)
+                show_attention_to_image(
+                    attentions[layer_idx, head_idx], caption, image, tokens
+                )
 
     st.markdown("### Attention of last token to non-image tokens")
     to_drop_start_tokens = st.checkbox("Ignore tokens before the prompt", value=False)
@@ -269,7 +275,9 @@ def main():
         cols = st.columns(ncols)
         for col, head_idx in zip(cols, group):
             with col:
-                show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens)
+                show_attention_to_other(
+                    attentions, head_idx, tokens, to_drop_start_tokens
+                )
 
 
 if __name__ == "__main__":
