@@ -13,6 +13,7 @@ import streamlit as st
 import tarfile
 import wget
 
+from PIL import Image
 from toolz import partition_all, dissoc
 
 st.set_page_config(layout="wide")
@@ -38,32 +39,39 @@ def extract_archive(archive_path, extract_to):
 
 @st.cache_data
 def download_data():
-    URL_DATA_FILELIST = "https://sharing.speed.pub.ro/owncloud/index.php/s/o5rXQGOtHheejET/download"
+    URL_DATA_FILELIST = (
+        "https://sharing.speed.pub.ro/owncloud/index.php/s/o5rXQGOtHheejET/download"
+    )
     path = DIR_DATA / "controlled_clevr_dataset.json"
     download(URL_DATA_FILELIST, path)
 
-    URL_DATA_IMAGES = "https://sharing.speed.pub.ro/owncloud/index.php/s/NCW0DGQqC6uPNvf/download"
+    URL_DATA_IMAGES = (
+        "https://sharing.speed.pub.ro/owncloud/index.php/s/NCW0DGQqC6uPNvf/download"
+    )
     path = DIR_DATA / "whatsup_vlms_data.tar.gz"
     downloaded = download(URL_DATA_IMAGES, path)
     if downloaded:
         extract_archive(path, DIR_DATA)
 
-    URL_ATTENTIONS = "https://sharing.speed.pub.ro/owncloud/index.php/s/bFmatxDAqzy6Bcw/download"
+    URL_ATTENTIONS = (
+        "https://sharing.speed.pub.ro/owncloud/index.php/s/bFmatxDAqzy6Bcw/download"
+    )
     download(URL_ATTENTIONS, PATH_ATTENTIONS)
 
 
-download_data()
+@st.cache_resource
+def load_h5py_file(path):
+    return h5py.File(path, "r")
 
 
-h5py_file = h5py.File(PATH_ATTENTIONS, "r")
-num_samples = len(h5py_file.keys())
+@st.cache_data
+def load_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
 
-with open(DIR_DATA / "controlled_clevr_dataset.json", "r") as f:
-    data = json.load(f)
 
-
-def show_attention_to_image(attentions, caption):
-    H, W = image.shape[:2]
+def show_attention_to_image(attentions, caption, image, tokens):
+    W, H = image.size
     PATCH_SIZE = 32
     W = W // PATCH_SIZE
     H = H // PATCH_SIZE
@@ -77,127 +85,11 @@ def show_attention_to_image(attentions, caption):
     st.image(
         attentions,
         caption=caption,
-        use_container_width="stretch",
+        width="stretch"
     )
 
 
-def get_image_path(idx):
-    datum = data[idx]
-    image_filename = Path(datum["image_path"]).name
-    image_path = Path("data/whatsup_vlms_data/controlled_clevr") / image_filename
-    return image_path
-
-
-with st.sidebar:
-    idx = st.number_input(
-        "Sample index",
-        min_value=0,
-        max_value=num_samples - 1,
-        value=0,
-    )
-
-    def get_key_str(result, key):
-        return result[key][()].decode("utf-8")
-
-    results = h5py_file[str(idx)]
-    image = results["image"][()]
-    question = get_key_str(results, "question")
-    answer_pred = get_key_str(results, "generated-text")
-    answer_true = get_key_str(results, "preposition")
-
-    # cols = st.columns([1, 2])
-    # st.image(image)
-    st.image(get_image_path(idx))
-    st.markdown(
-        """
-    - Prompt: {}
-    - Answer (pred): {}
-    - Answer (true): {}
-                """.format(
-            question,
-            answer_pred,
-            answer_true,
-        )
-    )
-
-    st.markdown("---")
-    st.markdown("### Attention rollout from a selected token")
-
-    tokens = [t.decode("utf-8") for t in results["input-tokens"][()]]
-
-    tokens_non_image_idxs = [i for i, t in enumerate(tokens) if t != "<|image_pad|>"]
-    query_idx = st.selectbox(
-        "Query token",
-        tokens_non_image_idxs,
-        format_func=lambda i: repr(tokens[i]),
-        index=len(tokens_non_image_idxs) - 1,
-    )
-
-    attentions = results["attention-rollout"][()]
-    attentions = attentions[query_idx]
-    show_attention_to_image(attentions, "Attention to image patches")
-
-    tokens_non_image_idxs = tokens_non_image_idxs
-    attentions_other = attentions[tokens_non_image_idxs]
-    fig, ax = plt.subplots(figsize=(3, 6))
-    tokens_labels = [repr(tokens[i]) for i in tokens_non_image_idxs]
-    ys = np.arange(len(attentions_other))
-    ys = ys[::-1]
-    ax.barh(ys, attentions_other)
-    ax.set_yticks(ys)
-    ax.set_yticklabels(tokens_labels)
-    ax.set_title("Attention to non-image tokens")
-    fig.set_tight_layout(True)
-    st.pyplot(fig)
-
-
-attentions = results["attentions"][()]
-num_layers, num_heads, seq_len = attentions.shape
-
-st.markdown("### Attention of last token to image patches")
-col0, col1, col2, *_ = st.columns([1, 1, 1, 3])
-layers_start = col0.number_input(
-    "First layer",
-    min_value=0,
-    max_value=num_layers - 1,
-    value=0,
-)
-layers_step = col1.number_input(
-    "Step",
-    min_value=1,
-    max_value=num_layers,
-    value=5,
-)
-layers_end = col2.number_input(
-    "Last layer",
-    min_value=layers_start,
-    max_value=num_layers,
-    value=num_layers,
-)
-
-if layers_step > (layers_end - layers_start):
-    st.error("Step is too large")
-    st.stop()
-
-if layers_end <= layers_start:
-    st.error("Last layer must be greater than first layer")
-    st.stop()
-
-layer_idxs = list(range(layers_start, layers_end, layers_step))
-
-for head_idx in range(num_heads):
-    cols = st.columns(len(layer_idxs))
-    for col, layer_idx in zip(cols, layer_idxs):
-        with col:
-            caption = "L: {} · H: {}".format(layer_idx, head_idx)
-            show_attention_to_image(attentions[layer_idx, head_idx], caption)
-
-
-st.markdown("### Attention of last token to non-image tokens")
-to_drop_start_tokens = st.checkbox("Ignore tokens before the prompt", value=False)
-
-
-def show_attention_to_other(attentions, head_idx):
+def show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens=False):
     IMAGE_TOKEN = "<|image_pad|>"
     other_idxs = [i for i, t in enumerate(tokens) if t != IMAGE_TOKEN]
     if to_drop_start_tokens:
@@ -216,6 +108,7 @@ def show_attention_to_other(attentions, head_idx):
     S = 0.3
     ncols = attentions.shape[0]
     nrows = attentions.shape[1]
+    plt.close("all")
     fig, ax = plt.subplots(figsize=(S * ncols, S * nrows))
     sns.heatmap(df, square=True, cbar=False, ax=ax)
     ax.set_title("Head: {} · max: {:.2f}".format(head_idx, attentions.max()))
@@ -224,9 +117,135 @@ def show_attention_to_other(attentions, head_idx):
     st.pyplot(fig)
 
 
-ncols = 2
-for group in partition_all(ncols, range(num_heads)):
-    cols = st.columns(ncols)
-    for col, head_idx in zip(cols, group):
-        with col:
-            show_attention_to_other(attentions, head_idx)
+def get_image_path(data, idx):
+    datum = data[idx]
+    image_filename = Path(datum["image_path"]).name
+    image_path = DIR_DATA / "controlled_clevr" / image_filename
+    return image_path
+
+
+def main():
+    download_data()
+
+    h5py_file = load_h5py_file(PATH_ATTENTIONS)
+    data = load_json(DIR_DATA / "controlled_clevr_dataset.json")
+
+    with st.sidebar:
+        num_samples = len(h5py_file.keys())
+        idx = st.number_input(
+            "Sample index",
+            min_value=0,
+            max_value=num_samples - 1,
+            value=0,
+        )
+
+        def get_key_str(result, key):
+            return result[key][()].decode("utf-8")
+
+        results = h5py_file[str(idx)]
+        question = get_key_str(results, "question")
+        answer_pred = get_key_str(results, "generated-text")
+        answer_true = get_key_str(results, "preposition")
+
+        # cols = st.columns([1, 2])
+        path_image = get_image_path(data, idx)
+        image = Image.open(path_image)
+
+        st.image(path_image)
+        st.markdown(
+            """
+        - Prompt: {}
+        - Answer (pred): {}
+        - Answer (true): {}
+                    """.format(
+                question,
+                answer_pred,
+                answer_true,
+            )
+        )
+
+        st.markdown("---")
+        st.markdown("### Attention rollout from a selected token")
+
+        tokens = [t.decode("utf-8") for t in results["input-tokens"][()]]
+        tokens_non_image_idxs = [
+            i for i, t in enumerate(tokens) if t != "<|image_pad|>"
+        ]
+        query_idx = st.selectbox(
+            "Query token",
+            tokens_non_image_idxs,
+            format_func=lambda i: repr(tokens[i]),
+            index=len(tokens_non_image_idxs) - 1,
+        )
+
+        attentions = results["attention-rollout"][()]
+        attentions = attentions[query_idx]
+        show_attention_to_image(attentions, "Attention to image patches", image, tokens)
+
+        tokens_non_image_idxs = tokens_non_image_idxs
+        attentions_other = attentions[tokens_non_image_idxs]
+        fig, ax = plt.subplots(figsize=(3, 6))
+        tokens_labels = [repr(tokens[i]) for i in tokens_non_image_idxs]
+        ys = np.arange(len(attentions_other))
+        ys = ys[::-1]
+        ax.barh(ys, attentions_other)
+        ax.set_yticks(ys)
+        ax.set_yticklabels(tokens_labels)
+        ax.set_title("Attention to non-image tokens")
+        fig.set_tight_layout(True)
+        st.pyplot(fig)
+
+    attentions = results["attentions"][()]
+    num_layers, num_heads, seq_len = attentions.shape
+
+    st.markdown("### Attention of last token to image patches")
+    col0, col1, col2, *_ = st.columns([1, 1, 1, 3])
+    layers_start = col0.number_input(
+        "First layer",
+        min_value=0,
+        max_value=num_layers - 1,
+        value=0,
+    )
+    layers_step = col1.number_input(
+        "Step",
+        min_value=1,
+        max_value=num_layers,
+        value=5,
+    )
+    layers_end = col2.number_input(
+        "Last layer",
+        min_value=layers_start,
+        max_value=num_layers,
+        value=num_layers,
+    )
+
+    if layers_step > (layers_end - layers_start):
+        st.error("Step is too large")
+        st.stop()
+
+    if layers_end <= layers_start:
+        st.error("Last layer must be greater than first layer")
+        st.stop()
+
+    layer_idxs = list(range(layers_start, layers_end, layers_step))
+
+    for head_idx in range(num_heads):
+        cols = st.columns(len(layer_idxs))
+        for col, layer_idx in zip(cols, layer_idxs):
+            with col:
+                caption = "L: {} · H: {}".format(layer_idx, head_idx)
+                show_attention_to_image(attentions[layer_idx, head_idx], caption, image, tokens)
+
+    st.markdown("### Attention of last token to non-image tokens")
+    to_drop_start_tokens = st.checkbox("Ignore tokens before the prompt", value=False)
+
+    ncols = 2
+    for group in partition_all(ncols, range(num_heads)):
+        cols = st.columns(ncols)
+        for col, head_idx in zip(cols, group):
+            with col:
+                show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens)
+
+
+if __name__ == "__main__":
+    main()
