@@ -1,0 +1,8 @@
+h5py
+matplotlib
+numpy
+pandas
+seaborn
+streamlit
+toolz
+wget
