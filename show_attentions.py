@@ -199,25 +199,49 @@ def main():
     num_layers, num_heads, seq_len = attentions.shape
 
     st.markdown("### Attention of last token to image patches")
-    col0, col1, col2, *_ = st.columns([1, 1, 1, 3])
-    layers_start = col0.number_input(
-        "First layer",
-        min_value=0,
-        max_value=num_layers - 1,
-        value=0,
-    )
-    layers_step = col1.number_input(
-        "Step",
-        min_value=1,
-        max_value=num_layers,
-        value=5,
-    )
-    layers_end = col2.number_input(
-        "Last layer",
-        min_value=layers_start,
-        max_value=num_layers,
-        value=num_layers,
-    )
+    cols1, cols2 = st.columns(2)
+    with cols1: 
+        col0, col1, col2 = st.columns(3)
+        layers_start = col0.number_input(
+            "First layer",
+            min_value=0,
+            max_value=num_layers - 1,
+            value=0,
+        )
+        layers_step = col1.number_input(
+            "Step layer",
+            min_value=1,
+            max_value=num_layers,
+            value=5,
+        )
+        layers_end = col2.number_input(
+            "Last layer",
+            min_value=layers_start,
+            max_value=num_layers,
+            value=num_layers,
+        )
+
+    with cols2:
+        col0, col1, col2 = st.columns(3)
+        heads_start = col0.number_input(
+            "First head",
+            min_value=0,
+            max_value=num_heads - 1,
+            value=0,
+        )
+        heads_step = col1.number_input(
+            "Step head",
+            min_value=1,
+            max_value=num_heads,
+            value=1,
+        )
+        heads_end = col2.number_input(
+            "Last head",
+            min_value=heads_start,
+            max_value=num_heads,
+            value=16,
+            help="Maximum value is {}".format(num_heads),
+        )
 
     if layers_step > (layers_end - layers_start):
         st.error("Step is too large")
@@ -228,8 +252,9 @@ def main():
         st.stop()
 
     layer_idxs = list(range(layers_start, layers_end, layers_step))
+    head_idxs = list(range(heads_start, heads_end, heads_step))
 
-    for head_idx in range(num_heads):
+    for head_idx in head_idxs:
         cols = st.columns(len(layer_idxs))
         for col, layer_idx in zip(cols, layer_idxs):
             with col:
@@ -240,7 +265,7 @@ def main():
     to_drop_start_tokens = st.checkbox("Ignore tokens before the prompt", value=False)
 
     ncols = 2
-    for group in partition_all(ncols, range(num_heads)):
+    for group in partition_all(ncols, head_idxs):
         cols = st.columns(ncols)
         for col, head_idx in zip(cols, group):
             with col:
