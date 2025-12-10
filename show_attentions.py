@@ -125,6 +125,37 @@ def get_image_path(data, idx):
     return image_path
 
 
+def compute_attention_identity(num_layers, seq_len):
+    attn = np.ones((seq_len, seq_len))
+    attn = np.tril(attn)
+    return attn
+
+
+def compute_attention_receptive_field(num_layers, seq_len):
+    attn = np.zeros((seq_len, seq_len))
+    for k in range(seq_len):
+        attn += np.diag(np.full(seq_len - k, k + 1), -k)
+    attn = attn / attn.sum(axis=-1, keepdims=True)
+    return attn
+
+
+def compute_attention_num_paths(num_layers, seq_len):
+    step = np.ones((seq_len, seq_len))
+    step = np.tril(step)
+    attn = np.eye(seq_len)
+    for i in range(num_layers):
+        attn = attn @ step
+        attn = attn / attn.sum(axis=-1, keepdims=True)
+    return attn
+
+
+ROLLOUT_NORM_FUNCS = {
+    "no normalization": compute_attention_identity,
+    "receptive field": compute_attention_receptive_field,
+    "number of paths": compute_attention_num_paths,
+}
+
+
 def main():
     download_data()
 
@@ -172,16 +203,37 @@ def main():
         tokens_non_image_idxs = [
             i for i, t in enumerate(tokens) if t != "<|image_pad|>"
         ]
-        query_idx = st.selectbox(
+        col0, col1 = st.columns(2)
+        query_idx = col0.selectbox(
             "Query token",
             tokens_non_image_idxs,
             format_func=lambda i: repr(tokens[i]) + " ({})".format(i),
             index=len(tokens_non_image_idxs) - 1,
         )
+        norm_rollout = col1.selectbox(
+            "Rollout normalization",
+            ROLLOUT_NORM_FUNCS,
+            help="How to scale the attention rollout. This normalizations accounts for the fact that earlier tokens are attended to more strongly due to the causal structure of the decoder.",
+        )
 
-        attentions = results["attention-rollout"][()]
-        attentions = attentions[query_idx]
-        show_attention_to_image(attentions, "Attention to image patches", image, tokens)
+        attentions = results["attentions"][()]
+        num_layers, num_heads, seq_len = attentions.shape
+
+        attentions_rollout = results["attention-rollout"][()]
+        attentions_norm = ROLLOUT_NORM_FUNCS[norm_rollout](num_layers, seq_len)
+        attentions_norm[attentions_norm == 0] = 1e-9
+        attentions_rollout = attentions_rollout / attentions_norm
+        attentions_rollout = attentions_rollout / attentions_rollout.sum(
+            axis=-1,
+            keepdims=True,
+        )
+        attentions_rollout_q = attentions_rollout[query_idx]
+        show_attention_to_image(
+            attentions_rollout_q,
+            "Attention to image patches",
+            image,
+            tokens,
+        )
 
         to_drop_start_tokens_0 = st.checkbox(
             "Ignore tokens before the prompt (attention to non-image tokens)",
@@ -192,7 +244,7 @@ def main():
             tokens_non_image_idxs = tokens_non_image_idxs[5:]
 
         tokens_non_image_idxs = tokens_non_image_idxs
-        attentions_other = attentions[tokens_non_image_idxs]
+        attentions_other = attentions_rollout_q[tokens_non_image_idxs]
         fig, ax = plt.subplots(figsize=(3, 6))
         tokens_labels = [repr(tokens[i]) for i in tokens_non_image_idxs]
         ys = np.arange(len(attentions_other))
@@ -203,9 +255,6 @@ def main():
         ax.set_title("Attention to non-image tokens")
         fig.set_tight_layout(True)
         st.pyplot(fig)
-
-    attentions = results["attentions"][()]
-    num_layers, num_heads, seq_len = attentions.shape
 
     st.markdown("### Attention of last token to image patches")
     cols1, cols2 = st.columns(2)
