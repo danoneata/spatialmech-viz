@@ -13,6 +13,8 @@ import streamlit as st
 import tarfile
 import wget
 
+from matplotlib import cm
+
 from PIL import Image
 from toolz import partition_all, dissoc
 
@@ -82,7 +84,10 @@ def show_attention_to_image(attentions, caption, image, tokens):
     max_val = attentions.max()
     attentions = attentions / max_val
     caption = caption + " · max: {:.2f}".format(max_val)
-    st.image(attentions, caption=caption, width="stretch")
+    image_attentions = cm.viridis(attentions)
+    image_attentions = np.uint8(image_attentions * 255)
+    image_attentions = Image.fromarray(image_attentions)
+    st.image(image_attentions, caption=caption, width="stretch")
 
 
 def show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens=False):
