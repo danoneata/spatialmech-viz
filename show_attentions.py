@@ -73,21 +73,26 @@ def load_json(path):
 
 
 def show_attention_to_image(attentions, caption, image, tokens):
-    W, H = image.size
+    width_px, height_px = image.size
     PATCH_SIZE = 32
-    W = W // PATCH_SIZE
-    H = H // PATCH_SIZE
+    width_patches = width_px // PATCH_SIZE
+    height_patches = height_px // PATCH_SIZE
     IMAGE_TOKEN = "<|image_pad|>"
     image_idxs = [i for i, t in enumerate(tokens) if t == IMAGE_TOKEN]
     attentions = attentions[image_idxs]
-    attentions = attentions.reshape(H, W)
+    attentions = attentions.reshape(height_patches, width_patches)
     max_val = attentions.max()
     attentions = attentions / max_val
     caption = caption + " · max: {:.2f}".format(max_val)
     image_attentions = cm.viridis(attentions)
     image_attentions = np.uint8(image_attentions * 255)
     image_attentions = Image.fromarray(image_attentions)
-    st.image(image_attentions, caption=caption, width="stretch")
+    # Upscale with nearest neighbour so each attention patch remains crisp when displayed.
+    image_attentions = image_attentions.resize(
+        (width_patches * PATCH_SIZE, height_patches * PATCH_SIZE),
+        resample=Image.NEAREST,
+    )
+    st.image(image_attentions, caption=caption)
 
 
 def show_attention_to_other(attentions, head_idx, tokens, to_drop_start_tokens=False):
