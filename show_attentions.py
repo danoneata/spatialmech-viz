@@ -161,105 +161,8 @@ ROLLOUT_NORM_FUNCS = {
 }
 
 
-def main():
-    download_data()
-
-    h5py_file = load_h5py_file(PATH_ATTENTIONS)
-    data = load_json(DIR_DATA / "controlled_clevr_dataset.json")
-
-    with st.sidebar:
-        num_samples = len(h5py_file.keys())
-        idx = st.number_input(
-            "Sample index",
-            min_value=0,
-            max_value=num_samples - 1,
-            value=0,
-        )
-
-        def get_key_str(result, key):
-            return result[key][()].decode("utf-8")
-
-        results = h5py_file[str(idx)]
-        question = get_key_str(results, "question")
-        answer_pred = get_key_str(results, "generated-text")
-        answer_true = get_key_str(results, "preposition")
-
-        # cols = st.columns([1, 2])
-        path_image = get_image_path(data, idx)
-        image = Image.open(path_image)
-
-        st.image(path_image)
-        st.markdown(
-            """
-        - Prompt: {}
-        - Answer (pred): {}
-        - Answer (true): {}
-                    """.format(
-                question,
-                answer_pred,
-                answer_true,
-            )
-        )
-
-        st.markdown("---")
-        st.markdown("### Attention rollout from a selected token")
-
-        tokens = [t.decode("utf-8") for t in results["input-tokens"][()]]
-        tokens_non_image_idxs = [
-            i for i, t in enumerate(tokens) if t != "<|image_pad|>"
-        ]
-        col0, col1 = st.columns(2)
-        query_idx = col0.selectbox(
-            "Query token",
-            tokens_non_image_idxs,
-            format_func=lambda i: repr(tokens[i]) + " ({})".format(i),
-            index=len(tokens_non_image_idxs) - 1,
-        )
-        norm_rollout = col1.selectbox(
-            "Rollout normalization",
-            ROLLOUT_NORM_FUNCS,
-            help="How to scale the attention rollout. This normalizations accounts for the fact that earlier tokens are attended to more strongly due to the causal structure of the decoder.",
-        )
-
-        attentions = results["attentions"][()]
-        num_layers, num_heads, seq_len = attentions.shape
-
-        attentions_rollout = results["attention-rollout"][()]
-        attentions_norm = ROLLOUT_NORM_FUNCS[norm_rollout](num_layers, seq_len)
-        attentions_norm[attentions_norm == 0] = 1e-9
-        attentions_rollout = attentions_rollout / attentions_norm
-        attentions_rollout = attentions_rollout / attentions_rollout.sum(
-            axis=-1,
-            keepdims=True,
-        )
-        attentions_rollout_q = attentions_rollout[query_idx]
-        show_attention_to_image(
-            attentions_rollout_q,
-            "Attention to image patches",
-            image,
-            tokens,
-        )
-
-        to_drop_start_tokens_0 = st.checkbox(
-            "Ignore tokens before the prompt (attention to non-image tokens)",
-            value=False,
-        )
-
-        if to_drop_start_tokens_0:
-            tokens_non_image_idxs = tokens_non_image_idxs[5:]
-
-        tokens_non_image_idxs = tokens_non_image_idxs
-        attentions_other = attentions_rollout_q[tokens_non_image_idxs]
-        fig, ax = plt.subplots(figsize=(3, 6))
-        tokens_labels = [repr(tokens[i]) for i in tokens_non_image_idxs]
-        ys = np.arange(len(attentions_other))
-        ys = ys[::-1]
-        ax.barh(ys, attentions_other)
-        ax.set_yticks(ys)
-        ax.set_yticklabels(tokens_labels)
-        ax.set_title("Attention to non-image tokens")
-        fig.set_tight_layout(True)
-        st.pyplot(fig)
+def show_attention_last_token_to_image(attentions, tokens, image):
+    num_layers, num_heads, _ = attentions.shape
 
     st.markdown("### Attention of last token to image patches")
     cols1, cols2 = st.columns(2)
@@ -326,6 +229,10 @@ def main():
                     attentions[layer_idx, head_idx], caption, image, tokens
                 )
 
+    return head_idxs
+
+
+def show_attention_last_token_to_other(attentions, tokens, head_idxs):
     st.markdown("### Attention of last token to non-image tokens")
     to_drop_start_tokens = st.checkbox("Ignore tokens before the prompt", value=False)
 
@@ -337,6 +244,159 @@ def main():
                 show_attention_to_other(
                     attentions, head_idx, tokens, to_drop_start_tokens
                 )
+
+
+def show_attention_last_token_agg_by_token_types(attentions, tokens):
+    st.markdown("### Attention of last token aggregated over token types")
+
+    def select_head(attentions, head_func):
+        if head_func == "mean":
+            A = attentions.mean(axis=1)
+        elif head_func == "min":
+            A = attentions.min(axis=1)
+        elif head_func == "max":
+            A = attentions.max(axis=1)
+        else:
+            A = attentions[:, head_func]
+        return A
+
+    _, num_heads, _ = attentions.shape
+
+    col0, col1, _ = st.columns([1, 1, 4])
+    head_func = col0.selectbox(
+        "Head",
+        ["mean", "min", "max", "single"],
+        help="Which head to use for the layer-wise attention plots below.",
+    )
+    if head_func == "single":
+        head_func = col1.number_input(
+            "Head index",
+            min_value=0,
+            max_value=num_heads - 1,
+            value=0,
+            step=1,
+        )
+
+    A = select_head(attentions, head_func)
+    idxs_image = [i for i, t in enumerate(tokens) if t == "<|image_pad|>"]
+    idxs_other = [i for i, t in enumerate(tokens) if t != "<|image_pad|>"]
+    idxs_text = idxs_other[5:]  # drop the first 5 prompt tokens
+    idxs_other = idxs_other[:5]
+    df = pd.DataFrame(
+        {
+            "image": A[:, idxs_image].sum(axis=1),
+            "text": A[:, idxs_text].sum(axis=1),
+            "other": A[:, idxs_other].sum(axis=1),
+        }
+    )
+    df.index.name = "layer"
+    st.line_chart(df)
+    st.markdown("Other tokens correspond to the first prompt tokens before the question: {}".format(", ".join([repr(tokens[i]) for i in idxs_other])))
+
+
+def main():
+    download_data()
+
+    h5py_file = load_h5py_file(PATH_ATTENTIONS)
+    data = load_json(DIR_DATA / "controlled_clevr_dataset.json")
+
+    with st.sidebar:
+        num_samples = len(h5py_file.keys())
+        idx = st.number_input(
+            "Sample index",
+            min_value=0,
+            max_value=num_samples - 1,
+            value=0,
+        )
+
+        def get_key_str(result, key):
+            return result[key][()].decode("utf-8")
+
+        results = h5py_file[str(idx)]
+        question = get_key_str(results, "question")
+        answer_pred = get_key_str(results, "generated-text")
+        answer_true = get_key_str(results, "preposition")
+
+        # cols = st.columns([1, 2])
+        path_image = get_image_path(data, idx)
+        image = Image.open(path_image)
+
+        st.image(path_image)
+        st.markdown(
+            """
+        - Prompt: {}
+        - Answer (pred): {}
+        - Answer (true): {}
+                    """.format(
+                question,
+                answer_pred,
+                answer_true,
+            )
+        )
+
+        st.markdown("---")
+        st.markdown("### Attention rollout from a selected token")
+
+        tokens = [t.decode("utf-8") for t in results["input-tokens"][()]]
+        tokens_non_image_idxs = [
+            i for i, t in enumerate(tokens) if t != "<|image_pad|>"
+        ]
+        col0, col1 = st.columns(2)
+        query_idx = col0.selectbox(
+            "Query token",
+            tokens_non_image_idxs,
+            format_func=lambda i: repr(tokens[i]) + " ({})".format(i),
+            index=len(tokens_non_image_idxs) - 1,
+        )
+        norm_rollout = col1.selectbox(
+            "Rollout normalization",
+            ROLLOUT_NORM_FUNCS,
+            help="How to scale the attention rollout. This normalizations accounts for the fact that earlier tokens are attended to more strongly due to the causal structure of the decoder.",
+        )
+
+        attentions = results["attentions"][()]
+        num_layers, _, seq_len = attentions.shape
+
+        attentions_rollout = results["attention-rollout"][()]
+        attentions_norm = ROLLOUT_NORM_FUNCS[norm_rollout](num_layers, seq_len)
+        attentions_norm[attentions_norm == 0] = 1e-9
+        attentions_rollout = attentions_rollout / attentions_norm
+        attentions_rollout = attentions_rollout / attentions_rollout.sum(
+            axis=-1,
+            keepdims=True,
+        )
+        attentions_rollout_q = attentions_rollout[query_idx]
+        show_attention_to_image(
+            attentions_rollout_q,
+            "Attention to image patches",
+            image,
+            tokens,
+        )
+
+        to_drop_start_tokens_0 = st.checkbox(
+            "Ignore tokens before the prompt (attention to non-image tokens)",
+            value=False,
+        )
+
+        if to_drop_start_tokens_0:
+            tokens_non_image_idxs = tokens_non_image_idxs[5:]
+
+        tokens_non_image_idxs = tokens_non_image_idxs
+        attentions_other = attentions_rollout_q[tokens_non_image_idxs]
+        fig, ax = plt.subplots(figsize=(3, 6))
+        tokens_labels = [repr(tokens[i]) for i in tokens_non_image_idxs]
+        ys = np.arange(len(attentions_other))
+        ys = ys[::-1]
+        ax.barh(ys, attentions_other)
+        ax.set_yticks(ys)
+        ax.set_yticklabels(tokens_labels)
+        ax.set_title("Attention to non-image tokens")
+        fig.set_tight_layout(True)
+        st.pyplot(fig)
+
+    head_idxs = show_attention_last_token_to_image(attentions, tokens, image)
+    show_attention_last_token_to_other(attentions, tokens, head_idxs)
+    show_attention_last_token_agg_by_token_types(attentions, tokens)
 
 
 if __name__ == "__main__":
